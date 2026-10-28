@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>모바일 AR 음향 공간 분석기</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            cyan: '#00F0FF',
+                            dark: '#0B0E14',
+                            panel: 'rgba(15, 20, 30, 0.85)',
+                        }
+                    },
+                    animation: {
+                        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            color: white;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* Camera & Fallback Background */
+        #camera-feed {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 0;
+        }
+        .grid-bg {
+            position: absolute;
+            inset: 0;
+            background-color: #0B0E14;
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            z-index: 0;
+        }
+
+        /* Glassmorphism */
+        .glass-panel {
+            background: rgba(15, 20, 30, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-top: 1px solid rgba(255, 255, 255, 0.15);
+            border-left: 1px solid rgba(255, 255, 255, 0.05);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Bottom Sheet Transition */
+        .bottom-sheet {
+            transform: translateY(120%);
+            transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
+            opacity: 0;
+            pointer-events: none;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            z-index: 30;
+        }
+        .bottom-sheet.active {
+            transform: translateY(0);
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        /* Leveler UI */
+        .leveler-ring {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            position: relative;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.4);
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+        }
+        .leveler-crosshair-h { position: absolute; width: 100%; height: 1px; background: rgba(255,255,255,0.3); }
+        .leveler-crosshair-v { position: absolute; height: 100%; width: 1px; background: rgba(255,255,255,0.3); }
+        .leveler-target {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid #00F0FF;
+            position: absolute;
+            z-index: 2;
+        }
+        .leveler-bubble {
+            width: 20px;
+            height: 20px;
+            background-color: #f87171; /* red-400 */
+            border-radius: 50%;
+            position: absolute;
+            transition: transform 0.1s ease-out, background-color 0.3s ease;
+            box-shadow: 0 0 10px rgba(248, 113, 113, 0.8);
+            z-index: 1;
+        }
+        .leveler-bubble.aligned {
+            background-color: #4ade80; /* green-400 */
+            box-shadow: 0 0 15px rgba(74, 222, 128, 0.8);
+        }
+
+        /* Value Transition */
+        .value-transition {
+            transition: color 0.5s ease;
+        }
+
+        /* Hide Scrollbar */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="font-sans antialiased text-white h-screen w-full relative">
+
+    <!-- LAYER 1: Camera / Background -->
+    <video id="camera-feed" autoplay playsinline muted class="hidden"></video>
+    <div id="fallback-bg" class="grid-bg flex items-center justify-center">
+        <i class="ph ph-camera-slash text-white/20 text-4xl mb-16"></i>
+    </div>
+
+    <!-- LAYER 2: AR HUD overlay -->
+    <div class="absolute top-0 left-0 w-full p-6 z-10 pointer-events-none flex justify-between items-start">
+        <div>
+            <h1 class="text-xl font-bold tracking-tight text-white drop-shadow-md">AcoustiAR</h1>
+            <p class="text-xs text-brand-cyan font-mono flex items-center gap-1 drop-shadow-md mt-1">
+                <span class="w-2 h-2 rounded-full bg-brand-cyan animate-pulse"></span>
+                실시간 분석 모드
+            </p>
+        </div>
+        <div class="text-right">
+            <p id="hud-status" class="text-xs font-mono text-gray-300 bg-black/40 px-2 py-1 rounded backdrop-blur-sm border border-white/10">대기 중</p>
+        </div>
+    </div>
+
+    <!-- LAYER 3: Bottom Sheets -->
+
+    <!-- Step 1: Height Input -->
+    <div id="step-1" class="bottom-sheet glass-panel p-6 pb-10 active">
+        <div class="w-12 h-1 bg-white/20 rounded-full mx-auto mb-6"></div>
+        <h2 class="text-xl font-bold mb-2">1단계: 공간 스케일링</h2>
+        <p class="text-sm text-gray-400 mb-6">정확한 체적 계산을 위해 사용자의 눈높이를 기준으로 스케일을 교정합니다.</p>
+        
+        <div class="bg-black/50 border border-white/10 rounded-2xl p-4 mb-6 relative flex items-center justify-between">
+            <span class="text-gray-400 font-medium">사용자 키</span>
+            <div class="flex items-center gap-2">
+                <input type="number" id="user-height" value="175" class="w-20 bg-transparent text-right text-xl font-mono text-white focus:outline-none focus:text-brand-cyan border-b border-gray-600 focus:border-brand-cyan pb-1 transition-colors">
+                <span class="text-gray-400 font-mono">cm</span>
+            </div>
+        </div>
+
+        <button onclick="requestGyroAndNext()" class="w-full py-4 bg-white text-black font-bold rounded-xl active:scale-95 transition-transform flex items-center justify-center gap-2">
+            다음: 파노라마 스캔
+            <i class="ph-bold ph-arrow-right"></i>
+        </button>
+    </div>
+
+    <!-- Step 2: Gyro Leveler -->
+    <div id="step-2" class="bottom-sheet glass-panel p-6 pb-10">
+        <div class="w-12 h-1 bg-white/20 rounded-full mx-auto mb-6"></div>
+        <div class="text-center mb-6">
+            <h2 class="text-xl font-bold mb-2">2단계: 수평 정렬</h2>
+            <p class="text-sm text-gray-400">기기를 수직으로 들고 버블을 중앙 원에 맞추세요.</p>
+        </div>
+        
+        <!-- Leveler UI -->
+        <div class="mb-8">
+            <div class="leveler-ring">
+                <div class="leveler-crosshair-h"></div>
+                <div class="leveler-crosshair-v"></div>
+                <div class="leveler-target"></div>
+                <div id="leveler-bubble" class="leveler-bubble" style="transform: translate(0px, 0px);"></div>
+            </div>
+            <p id="level-warning" class="text-center text-xs text-red-400 font-mono h-4 mt-4">수평을 맞추어 주세요.</p>
+        </div>
+
+        <div class="flex gap-3">
+            <button onclick="skipToScan()" class="flex-1 py-4 bg-white/10 text-white font-medium rounded-xl active:scale-95 transition-transform border border-white/10">
+                건너뛰기 (PC용)
+            </button>
+            <button id="btn-start-scan" onclick="startScan()" class="flex-[2] py-4 bg-brand-cyan/20 text-brand-cyan font-bold rounded-xl transition-all border border-brand-cyan/30 opacity-50 cursor-not-allowed" disabled>
+                스캔 시작
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 3: Scanning Progress -->
+    <div id="step-3" class="bottom-sheet glass-panel p-6 pb-10">
+        <div class="text-center mb-8 mt-4">
+            <i class="ph-duotone ph-scan text-5xl text-brand-cyan mb-4 animate-pulse"></i>
+            <h2 class="text-xl font-bold mb-2">공간 매핑 중...</h2>
+            <p class="text-sm text-gray-400">제자리에서 천천히 360도 회전하세요.</p>
+        </div>
+
+        <div class="mb-8">
+            <div class="flex justify-between text-xs font-mono text-brand-cyan mb-2">
+                <span>진행률</span>
+                <span id="scan-progress-text">0%</span>
+            </div>
+            <div class="h-3 w-full bg-black/50 rounded-full overflow-hidden border border-white/10 relative shadow-inner">
+                <div id="scan-progress-bar" class="h-full bg-brand-cyan rounded-full w-0 transition-all duration-300 shadow-[0_0_10px_#00F0FF]"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Step 4 & 5: Results & Simulation -->
+    <div id="step-4" class="bottom-sheet glass-panel p-6 pb-8 max-h-[85vh] overflow-y-auto no-scrollbar flex flex-col">
+        <div class="w-12 h-1 bg-white/20 rounded-full mx-auto mb-6 shrink-0"></div>
+        
+        <div class="flex justify-between items-start mb-6 shrink-0">
+            <div>
+                <h2 class="text-xl font-bold">분석 완료</h2>
+                <p class="text-xs text-brand-cyan font-mono mt-1">I-SIMPA 음향 엔진</p>
+            </div>
+            <div class="bg-white/10 px-3 py-1.5 rounded-lg border border-white/10 text-right">
+                <p class="text-[10px] text-gray-400 uppercase">추정 체적</p>
+                <p class="text-sm font-mono font-bold text-white">52.4 m³</p>
+            </div>
+        </div>
+
+        <div class="bg-black/40 border border-white/10 rounded-2xl p-5 mb-6 space-y-5 shrink-0 shadow-lg">
+            <!-- RT60 -->
+            <div>
+                <div class="flex justify-between items-end mb-2">
+                    <h3 class="text-sm font-semibold text-gray-300">잔향 시간 (RT60)</h3>
+                    <span id="rt60-val" class="text-2xl font-mono font-bold text-red-400 value-transition drop-shadow-md">1.82s</span>
+                </div>
+                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+                    <div id="rt60-bar" class="h-full bg-red-500 rounded-full w-[85%] transition-all duration-1000 ease-out"></div>
+                </div>
+                <p class="text-[10px] text-right mt-1 text-gray-500 font-mono">Target: 0.5s - 0.8s</p>
+            </div>
+
+            <!-- STI -->
+            <div>
+                <div class="flex justify-between items-end mb-2">
+                    <h3 class="text-sm font-semibold text-gray-300">음성 명료도 (STI)</h3>
+                    <span id="sti-val" class="text-2xl font-mono font-bold text-orange-400 value-transition drop-shadow-md">0.45</span>
+                </div>
+                <div class="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+                    <div id="sti-bar" class="h-full bg-orange-400 rounded-full w-[45%] transition-all duration-1000 ease-out"></div>
+                </div>
+                <p class="text-[10px] text-right mt-1 text-gray-500 font-mono">Target: > 0.60 (Good)</p>
+            </div>
+        </div>
+
+        <div class="space-y-2 mb-6 shrink-0">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider ml-1">감지된 주요 표면 재질</h3>
+            <div class="bg-white/5 border border-white/5 rounded-xl p-3 flex justify-between items-center">
+                <span class="text-sm text-gray-300"><i class="ph-fill ph-wall mr-2"></i>콘크리트 벽면</span>
+                <span class="text-xs font-mono text-gray-500">반사율 높음</span>
+            </div>
+            <div class="bg-white/5 border border-white/5 rounded-xl p-3 flex justify-between items-center">
+                <span class="text-sm text-gray-300"><i class="ph-fill ph-squares-four mr-2"></i>단단한 바닥재</span>
+                <span class="text-xs font-mono text-gray-500">반사율 중간</span>
+            </div>
+        </div>
+
+        <div class="mt-auto space-y-3 shrink-0">
+            <button id="btn-treat" onclick="applyTreatment()" class="w-full py-4 bg-brand-cyan text-black font-bold rounded-xl active:scale-95 transition-transform flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(0,240,255,0.3)]">
+                <i class="ph-bold ph-magic-wand text-lg"></i>
+                자동 흡음재 배치 시뮬레이션
+            </button>
+            <button onclick="exportSKP()" class="w-full py-3.5 bg-white/10 text-white font-medium rounded-xl active:scale-95 transition-transform flex items-center justify-center gap-2 border border-white/10 hover:bg-white/20">
+                <i class="ph-bold ph-download-simple"></i>
+                SKP 3D 모델 내보내기
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed top-6 left-1/2 -translate-x-1/2 bg-white text-black px-4 py-3 rounded-full shadow-2xl font-medium text-sm flex items-center gap-2 z-50 transition-all duration-300 opacity-0 pointer-events-none translate-y-[-20px] whitespace-nowrap">
+        <i class="ph-fill ph-check-circle text-green-500 text-lg"></i>
+        <span id="toast-msg">알림</span>
+    </div>
+
+    <script>
+        // --- UI & State Management ---
+        let currentStep = 1;
+        const hudStatus = document.getElementById('hud-status');
+        
+        function showStep(stepNumber) {
+            document.querySelectorAll('.bottom-sheet').forEach(sheet => {
+                sheet.classList.remove('active');
+            });
+            document.getElementById(`step-${stepNumber}`).classList.add('active');
+            currentStep = stepNumber;
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-msg').innerText = msg;
+            toast.classList.remove('opacity-0', 'translate-y-[-20px]');
+            toast.classList.add('opacity-100', 'translate-y-0');
+            setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', 'translate-y-[-20px]');
+            }, 3000);
+        }
+
+        // --- Camera Setup ---
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
+                });
+                const video = document.getElementById('camera-feed');
+                video.srcObject = stream;
+                video.classList.remove('hidden');
+                document.getElementById('fallback-bg').classList.add('hidden');
+                hudStatus.innerText = "카메라 준비됨";
+            } catch (err) {
+                console.warn("Camera access denied or unavailable.");
+                hudStatus.innerText = "가상 공간 모드";
+            }
+        }
+        window.addEventListener('load', initCamera);
+
+        // --- Step 1 -> 2: Gyroscope Permission Flow ---
+        async function requestGyroAndNext() {
+            const height = document.getElementById('user-height').value;
+            if(!height) {
+                showToast("키를 입력해주세요.");
+                return;
+            }
+
+            // iOS 13+ DeviceOrientation 권한 요청
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const permissionState = await DeviceOrientationEvent.requestPermission();
+                    if (permissionState === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                    } else {
+                        showToast("센서 접근 권한이 거부되었습니다.");
+                    }
+                } catch (error) {
+                    console.error("Permission request failed", error);
+                }
+            } else {
+                // Non-iOS or older devices
+                window.addEventListener('deviceorientation', handleOrientation);
+            }
+
+            showStep(2);
+            hudStatus.innerText = "수평계 교정 중";
+        }
+
+        // --- Gyroscope Leveler Logic ---
+        let isLevel = false;
+
+        function handleOrientation(event) {
+            if (currentStep !== 2) return;
+            
+            // beta: 앞뒤 기울기 (-180 to 180). 세로로 들면 보통 90도 근처.
+            // gamma: 좌우 기울기 (-90 to 90). 세로로 똑바로 들면 0도 근처.
+            if (event.beta === null) return; 
+
+            // 기준을 90도(수직)으로 잡음.
+            let pitch = event.beta - 90; 
+            let roll = event.gamma;
+
+            updateLevelerUI(roll, pitch);
+        }
+
+        function updateLevelerUI(x, y) {
+            const bubble = document.getElementById('leveler-bubble');
+            const warning = document.getElementById('level-warning');
+            const btnScan = document.getElementById('btn-start-scan');
+
+            // 이동 범위 제한 (반지름 약 50px 내에서 움직이도록 스케일링)
+            // 30도를 최대 이동치로 잡음
+            let moveX = Math.max(-50, Math.min(50, x * 1.5));
+            let moveY = Math.max(-50, Math.min(50, y * 1.5));
+
+            bubble.style.transform = `translate(${moveX}px, ${moveY}px)`;
+
+            // 오차 범위 5도 이내면 수평으로 간주
+            if (Math.abs(x) < 5 && Math.abs(y) < 5) {
+                bubble.classList.add('aligned');
+                warning.innerText = "수평이 맞았습니다!";
+                warning.classList.replace('text-red-400', 'text-green-400');
+                
+                if (!isLevel) {
+                    isLevel = true;
+                    btnScan.disabled = false;
+                    btnScan.classList.replace('bg-brand-cyan/20', 'bg-brand-cyan');
+                    btnScan.classList.replace('text-brand-cyan', 'text-black');
+                    btnScan.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+            } else {
+                bubble.classList.remove('aligned');
+                warning.innerText = "기기를 수직으로 세워 수평을 맞추세요.";
+                warning.classList.replace('text-green-400', 'text-red-400');
+                
+                if (isLevel) {
+                    isLevel = false;
+                    btnScan.disabled = true;
+                    btnScan.classList.replace('bg-brand-cyan', 'bg-brand-cyan/20');
+                    btnScan.classList.replace('text-black', 'text-brand-cyan');
+                    btnScan.classList.add('opacity-50', 'cursor-not-allowed');
+                }
+            }
+        }
+
+        // --- Step 3: Scanning Simulation ---
+        function skipToScan() {
+            // PC 테스트 등을 위한 강제 넘기기
+            if (window.DeviceOrientationEvent) window.removeEventListener('deviceorientation', handleOrientation);
+            startScan();
+        }
+
+        function startScan() {
+            showStep(3);
+            hudStatus.innerText = "공간 스캔 중...";
+            if (window.DeviceOrientationEvent) window.removeEventListener('deviceorientation', handleOrientation);
+
+            let progress = 0;
+            const bar = document.getElementById('scan-progress-bar');
+            const text = document.getElementById('scan-progress-text');
+            
+            const interval = setInterval(() => {
+                // 랜덤하게 1~5% 씩 증가시켜서 실제 스캔같은 느낌
+                progress += Math.random() * 5 + 1; 
+                if (progress >= 100) progress = 100;
+                
+                bar.style.width = `${progress}%`;
+                text.innerText = `${Math.floor(progress)}%`;
+
+                if (progress === 100) {
+                    clearInterval(interval);
+                    setTimeout(() => {
+                        finishScan();
+                    }, 500);
+                }
+            }, 100);
+        }
+
+        // --- Step 4 & 5: Results ---
+        function finishScan() {
+            showStep(4);
+            hudStatus.innerText = "I-SIMPA 분석 완료";
+        }
+
+        function applyTreatment() {
+            const btn = document.getElementById('btn-treat');
+            btn.innerHTML = `<i class="ph-bold ph-spinner animate-spin text-lg"></i> 최적화 연산 중...`;
+            btn.disabled = true;
+            btn.classList.add('opacity-80');
+
+            setTimeout(() => {
+                showToast("최적화된 50T 폴리에스터 흡음 패널이 가상 배치되었습니다.");
+                btn.innerHTML = `<i class="ph-fill ph-check-circle text-lg"></i> 시뮬레이션 적용 완료`;
+                btn.classList.replace('bg-brand-cyan', 'bg-green-400');
+
+                // RT60 Animation (1.82 -> 0.65)
+                const rt60Val = document.getElementById('rt60-val');
+                const rt60Bar = document.getElementById('rt60-bar');
+                rt60Val.innerText = "0.65s";
+                rt60Val.classList.replace('text-red-400', 'text-green-400');
+                rt60Bar.style.width = '30%'; // 시각적 감소
+                rt60Bar.classList.replace('bg-red-500', 'bg-green-400');
+
+                // STI Animation (0.45 -> 0.72)
+                const stiVal = document.getElementById('sti-val');
+                const stiBar = document.getElementById('sti-bar');
+                stiVal.innerText = "0.72 (Good)";
+                stiVal.classList.replace('text-orange-400', 'text-green-400');
+                stiBar.style.width = '75%'; // 시각적 증가
+                stiBar.classList.replace('bg-orange-400', 'bg-green-400');
+                
+            }, 1500);
+        }
+
+        function exportSKP() {
+            showToast("room_model_treated.skp 파일 다운로드를 시작합니다.");
+        }
+    </script>
+</body>
+</html>
